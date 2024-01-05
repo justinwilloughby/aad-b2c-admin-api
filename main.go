@@ -1,9 +1,12 @@
 package main
 
 import (
+	"bufio"
 	"context"
+	"fmt"
 	"net/http"
 	"os"
+	"strings"
 
 	azidentity "github.com/Azure/azure-sdk-for-go/sdk/azidentity"
 	"github.com/gin-gonic/gin"
@@ -17,11 +20,7 @@ type user struct {
 	UserPrincipalName string `json:"userPrincipalName"`
 }
 
-func getGraphClient() *msgraphsdk.GraphServiceClient {
-	tenantId := os.Getenv("AZURE_TENANT_ID")
-	clientId := os.Getenv("AZURE_CLIENT_ID")
-	clientSecret := os.Getenv("AZURE_CLIENT_SECRET")
-
+func getGraphClient(tenantId string, clientId string, clientSecret string) *msgraphsdk.GraphServiceClient {
 	cred, _ := azidentity.NewClientSecretCredential(
 		tenantId,
 		clientId,
@@ -35,9 +34,16 @@ func getGraphClient() *msgraphsdk.GraphServiceClient {
 }
 
 func getUsers(c *gin.Context) {
-	client := getGraphClient()
+	client, exists := c.Get("graphClient")
 
-	users, _ := client.Users().Get(context.Background(), nil)
+	if !exists {
+		c.Header("Content-Type", "application/json")
+		c.IndentedJSON(http.StatusInternalServerError, "Graph client not found")
+	}
+
+	graphClient := client.(*msgraphsdk.GraphServiceClient)
+
+	users, _ := graphClient.Users().Get(context.Background(), nil)
 
 	var usersList []user
 
@@ -56,9 +62,16 @@ func getUsers(c *gin.Context) {
 func getUser(c *gin.Context) {
 	id := c.Param("id")
 
-	client := getGraphClient()
+	client, exists := c.Get("graphClient")
 
-	u, _ := client.Users().ByUserId(id).Get(context.Background(), nil)
+	if !exists {
+		c.Header("Content-Type", "application/json")
+		c.IndentedJSON(http.StatusInternalServerError, "Graph client not found")
+	}
+
+	graphClient := client.(*msgraphsdk.GraphServiceClient)
+
+	u, _ := graphClient.Users().ByUserId(id).Get(context.Background(), nil)
 
 	user := user{
 		ID:                *u.GetId(),
@@ -73,14 +86,21 @@ func getUser(c *gin.Context) {
 func updateUser(c *gin.Context) {
 	id := c.Param("id")
 
-	client := getGraphClient()
+	client, exists := c.Get("graphClient")
+
+	if !exists {
+		c.Header("Content-Type", "application/json")
+		c.IndentedJSON(http.StatusInternalServerError, "Graph client not found")
+	}
+
+	graphClient := client.(*msgraphsdk.GraphServiceClient)
 
 	var displayName string = "John Doe"
 
 	requestBody := graphmodels.NewUser()
 	requestBody.SetDisplayName(&displayName)
 
-	_, err := client.Users().ByUserId(id).Patch(context.Background(), requestBody, nil)
+	_, err := graphClient.Users().ByUserId(id).Patch(context.Background(), requestBody, nil)
 
 	if err != nil {
 		c.Header("Content-Type", "application/json")
@@ -91,7 +111,14 @@ func updateUser(c *gin.Context) {
 }
 
 func createUser(c *gin.Context) {
-	client := getGraphClient()
+	client, exists := c.Get("graphClient")
+
+	if !exists {
+		c.Header("Content-Type", "application/json")
+		c.IndentedJSON(http.StatusInternalServerError, "Graph client not found")
+	}
+
+	graphClient := client.(*msgraphsdk.GraphServiceClient)
 
 	requestBody := graphmodels.NewUser()
 	accountEnabled := true
@@ -109,7 +136,7 @@ func createUser(c *gin.Context) {
 	passwordProfile.SetPassword(&password)
 	requestBody.SetPasswordProfile(passwordProfile)
 
-	u, err := client.Users().Post(context.Background(), requestBody, nil)
+	u, err := graphClient.Users().Post(context.Background(), requestBody, nil)
 
 	if err != nil {
 		c.Header("Content-Type", "application/json")
@@ -129,9 +156,16 @@ func createUser(c *gin.Context) {
 func deleteUser(c *gin.Context) {
 	id := c.Param("id")
 
-	client := getGraphClient()
+	client, exists := c.Get("graphClient")
 
-	error := client.Users().ByUserId(id).Delete(context.Background(), nil)
+	if !exists {
+		c.Header("Content-Type", "application/json")
+		c.IndentedJSON(http.StatusInternalServerError, "Graph client not found")
+	}
+
+	graphClient := client.(*msgraphsdk.GraphServiceClient)
+
+	error := graphClient.Users().ByUserId(id).Delete(context.Background(), nil)
 
 	if error != nil {
 		c.Header("Content-Type", "application/json")
@@ -141,12 +175,69 @@ func deleteUser(c *gin.Context) {
 	c.IndentedJSON(http.StatusNoContent, nil)
 }
 
+func getConfig() (string, string, string) {
+	var isLocal string = "false"
+
+	if len(os.Args) > 1 {
+		isLocal = os.Args[1]
+	}
+
+	var file *os.File
+	var err error
+
+	if isLocal == "true" {
+		file, err = os.Open("./secrets/config.txt")
+	} else {
+		file, err = os.Open("/app/secrets/config.txt")
+	}
+
+	if err != nil {
+		fmt.Println(err)
+	}
+
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+
+	var tenantId string
+	var clientId string
+	var clientSecret string
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.Contains(line, "AZURE_TENANT_ID") {
+			tenantId = strings.Split(line, "=")[1]
+		} else if strings.Contains(line, "AZURE_CLIENT_ID") {
+			clientId = strings.Split(line, "=")[1]
+		} else if strings.Contains(line, "AZURE_CLIENT_SECRET") {
+			clientSecret = strings.Split(line, "=")[1]
+		}
+	}
+
+	return tenantId, clientId, clientSecret
+}
+
+func GraphClientMiddleware(tenantId string, clientId string, clientSecret string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		graphClient := getGraphClient(tenantId, clientId, clientSecret)
+		c.Set("graphClient", graphClient)
+		c.Next()
+	}
+}
+
 func main() {
+
+	tenantId, clientId, clientSecret := getConfig()
+
 	router := gin.Default()
+
+	router.Use(GraphClientMiddleware(tenantId, clientId, clientSecret))
+
 	router.GET("/users", getUsers)
 	router.GET("/users/:id", getUser)
 	router.PATCH("/users/:id", updateUser)
 	router.POST("/users", createUser)
 	router.DELETE("/users/:id", deleteUser)
+
 	router.Run(":8080")
 }

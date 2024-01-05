@@ -1,0 +1,49 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aad-b2c-admin-api-deployment
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: aad-b2c-admin-api
+  template:
+    metadata:
+      labels:
+        app: aad-b2c-admin-api
+    spec:
+      serviceAccountName: vault-auth
+      volumes:
+        - name: config
+          configMap:
+            name: example-vault-agent-config
+            items:
+              - key: vault-agent-config.hcl
+                path: vault-agent-config.hcl
+        - name: shared-data
+          emptyDir: {}
+
+      initContainers:
+        - name: vault-agent
+          image: hashicorp/vault
+          args:
+            - agent
+            - -config=/etc/vault/vault-agent-config.hcl
+            - -log-level=debug
+          env:
+            - name: VAULT_ADDR
+              value: http://192.168.65.254:8200
+          volumeMounts:
+            - name: config
+              mountPath: /etc/vault
+            - name: shared-data
+              mountPath: /etc/secrets
+
+      containers:
+        - name: aad-b2c-admin-api-container
+          image: aad-b2c-admin-api:multistage
+          ports:
+            - containerPort: 8080
+          volumeMounts:
+            - name: shared-data
+              mountPath: /app/secrets
