@@ -7,6 +7,6 @@ spec:
     app: aad-b2c-admin-api
   ports:
     - protocol: TCP
-      port: 8081
+      port: 8080
       targetPort: 8080
   type: LoadBalancer

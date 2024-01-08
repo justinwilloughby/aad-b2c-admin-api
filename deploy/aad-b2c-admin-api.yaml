@@ -12,7 +12,7 @@ spec:
       labels:
         app: aad-b2c-admin-api
     spec:
-      serviceAccountName: vault-auth
+      serviceAccountName: default
       volumes:
         - name: config
           configMap:
@@ -32,7 +32,7 @@ spec:
             - -log-level=debug
           env:
             - name: VAULT_ADDR
-              value: http://192.168.65.254:8200
+              value: http://20.127.102.220:8200
           volumeMounts:
             - name: config
               mountPath: /etc/vault
@@ -41,7 +41,7 @@ spec:
 
       containers:
         - name: aad-b2c-admin-api-container
-          image: aad-b2c-admin-api:multistage
+          image: jjwilloughby/aad-b2c-admin-api:latest
           ports:
             - containerPort: 8080
           volumeMounts:
