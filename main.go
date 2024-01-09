@@ -3,13 +3,19 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/rsa"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
+	"io"
+	"math/big"
 	"net/http"
 	"os"
 	"strings"
 
 	azidentity "github.com/Azure/azure-sdk-for-go/sdk/azidentity"
 	"github.com/gin-gonic/gin"
+	"github.com/golang-jwt/jwt/v5"
 	msgraphsdk "github.com/microsoftgraph/msgraph-beta-sdk-go"
 	graphmodels "github.com/microsoftgraph/msgraph-beta-sdk-go/models"
 )
@@ -186,7 +192,7 @@ func getConfig() (string, string, string) {
 	var err error
 
 	if isLocal == "true" {
-		file, err = os.Open("./secrets/config.txt")
+		file, err = os.Open("./secrets/sample-config.txt")
 	} else {
 		file, err = os.Open("/app/secrets/config.txt")
 	}
@@ -225,11 +231,141 @@ func GraphClientMiddleware(tenantId string, clientId string, clientSecret string
 	}
 }
 
+func corsMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
+		c.Writer.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE")
+		c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+
+		if c.Request.Method == "OPTIONS" {
+			c.AbortWithStatus(204)
+			return
+		}
+
+		c.Next()
+	}
+}
+
+func getKey(jwksUrl string) (string, string) {
+	resp, err := http.Get(jwksUrl)
+	if err != nil {
+		fmt.Println(err)
+	}
+
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+
+	if err != nil {
+		fmt.Println(err)
+	}
+
+	type Key struct {
+		N string `json:"n"`
+		E string `json:"e"`
+	}
+
+	type Keys struct {
+		Key []Key `json:"keys"`
+	}
+
+	var Jwks Keys
+
+	err = json.Unmarshal(body, &Jwks)
+
+	if err != nil {
+		fmt.Println(err)
+	}
+
+	return Jwks.Key[0].N, Jwks.Key[0].E
+}
+
+func validateAccessToken(accessToken string) (bool, error) {
+	audience := "e3508248-371c-4b76-bdf1-067eaf47a556"
+	issuer := "https://contosowilloughbyb2c.b2clogin.com/926e4587-9275-41b9-a9b2-f4a41354f511/v2.0/"
+	scope := "Users.ReadWrite"
+
+	jwksUrl := "https://contosowilloughbyb2c.b2clogin.com/contosowilloughbyb2c.onmicrosoft.com/b2c_1_signuporsignin/discovery/keys"
+
+	token, err := jwt.Parse(accessToken, func(token *jwt.Token) (interface{}, error) {
+		if _, ok := token.Method.(*jwt.SigningMethodRSA); !ok {
+			return nil, fmt.Errorf("Unexpected signing method: %v", token.Header["alg"])
+		}
+
+		n, e := getKey(jwksUrl)
+
+		nDecoded, _ := base64.RawURLEncoding.DecodeString(n)
+		eDecoded, _ := base64.RawURLEncoding.DecodeString(e)
+
+		nBigInt := new(big.Int)
+		eBigInt := new(big.Int)
+
+		nBigInt.SetBytes(nDecoded)
+		eBigInt.SetBytes(eDecoded)
+
+		publicKey := &rsa.PublicKey{
+			N: nBigInt,
+			E: int(eBigInt.Uint64()),
+		}
+
+		return publicKey, nil
+	},
+		jwt.WithAudience(audience),
+		jwt.WithIssuer(issuer),
+		jwt.WithExpirationRequired(),
+		jwt.WithIssuedAt())
+
+	if err != nil {
+		fmt.Println(err)
+		return false, err
+	}
+
+	if claims, ok := token.Claims.(jwt.MapClaims); ok {
+		if !strings.Contains(claims["scp"].(string), scope) {
+			return false, nil
+		}
+	} else {
+		fmt.Println(err)
+		return false, err
+	}
+
+	return true, nil
+}
+
+func authMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		authHeader := c.Request.Header.Get("Authorization")
+
+		if authHeader == "" {
+			c.Header("Content-Type", "application/json")
+			c.IndentedJSON(http.StatusUnauthorized, "Authorization header not found")
+		}
+
+		accessToken := strings.Split(authHeader, " ")[1]
+
+		isValid, err := validateAccessToken(accessToken)
+
+		if err != nil {
+			c.Header("Content-Type", "application/json")
+			c.IndentedJSON(http.StatusInternalServerError, err)
+		}
+
+		if !isValid {
+			c.Header("Content-Type", "application/json")
+			c.IndentedJSON(http.StatusUnauthorized, "Invalid access token")
+		}
+
+		c.Next()
+	}
+}
+
 func main() {
 
 	tenantId, clientId, clientSecret := getConfig()
 
 	router := gin.Default()
+	router.Use(corsMiddleware())
+	router.Use(authMiddleware())
 
 	router.Use(GraphClientMiddleware(tenantId, clientId, clientSecret))
 
