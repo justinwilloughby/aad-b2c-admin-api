@@ -43,8 +43,8 @@ func getUsers(c *gin.Context) {
 	client, exists := c.Get("graphClient")
 
 	if !exists {
-		c.Header("Content-Type", "application/json")
-		c.IndentedJSON(http.StatusInternalServerError, "Graph client not found")
+		c.AbortWithStatusJSON(http.StatusInternalServerError, "Graph client not found")
+		return
 	}
 
 	graphClient := client.(*msgraphsdk.GraphServiceClient)
@@ -95,8 +95,8 @@ func updateUser(c *gin.Context) {
 	client, exists := c.Get("graphClient")
 
 	if !exists {
-		c.Header("Content-Type", "application/json")
-		c.IndentedJSON(http.StatusInternalServerError, "Graph client not found")
+		c.AbortWithStatusJSON(http.StatusInternalServerError, "Graph client not found")
+		return
 	}
 
 	graphClient := client.(*msgraphsdk.GraphServiceClient)
@@ -109,44 +109,66 @@ func updateUser(c *gin.Context) {
 	_, err := graphClient.Users().ByUserId(id).Patch(context.Background(), requestBody, nil)
 
 	if err != nil {
-		c.Header("Content-Type", "application/json")
-		c.IndentedJSON(http.StatusInternalServerError, err)
+		c.AbortWithStatusJSON(http.StatusInternalServerError, err)
+		return
 	}
 
 	c.IndentedJSON(http.StatusNoContent, nil)
+}
+
+type PasswordProfile struct {
+	Password                      string `json:"password"`
+	ForceChangePasswordNextSignIn bool   `json:"forceChangePasswordNextSignIn"`
+}
+
+type UserRequest struct {
+	AccountEnabled    bool            `json:"accountEnabled"`
+	DisplayName       string          `json:"displayName"`
+	MailNickname      string          `json:"mailNickname"`
+	UserPrincipalName string          `json:"userPrincipalName"`
+	PasswordProfile   PasswordProfile `json:"passwordProfile"`
 }
 
 func createUser(c *gin.Context) {
 	client, exists := c.Get("graphClient")
 
 	if !exists {
-		c.Header("Content-Type", "application/json")
-		c.IndentedJSON(http.StatusInternalServerError, "Graph client not found")
+		c.AbortWithStatusJSON(http.StatusInternalServerError, "Graph client not found")
+		return
+	}
+
+	var userRequest UserRequest
+
+	err := c.BindJSON(&userRequest)
+
+	if err != nil {
+		c.AbortWithStatusJSON(http.StatusInternalServerError, err)
+		return
 	}
 
 	graphClient := client.(*msgraphsdk.GraphServiceClient)
 
 	requestBody := graphmodels.NewUser()
-	accountEnabled := true
+	accountEnabled := userRequest.AccountEnabled
 	requestBody.SetAccountEnabled(&accountEnabled)
-	displayName := "Adele Vance"
+	displayName := userRequest.DisplayName
 	requestBody.SetDisplayName(&displayName)
-	mailNickname := "AdeleV"
+	mailNickname := userRequest.MailNickname
 	requestBody.SetMailNickname(&mailNickname)
-	userPrincipalName := "AdeleV@contosowilloughbyb2c.onmicrosoft.com"
+	userPrincipalName := userRequest.UserPrincipalName
 	requestBody.SetUserPrincipalName(&userPrincipalName)
 	passwordProfile := graphmodels.NewPasswordProfile()
-	forceChangePasswordNextSignIn := true
+	forceChangePasswordNextSignIn := userRequest.PasswordProfile.ForceChangePasswordNextSignIn
 	passwordProfile.SetForceChangePasswordNextSignIn(&forceChangePasswordNextSignIn)
-	password := "xWwvJ]6NMw+bWH-d"
+	password := userRequest.PasswordProfile.Password
 	passwordProfile.SetPassword(&password)
 	requestBody.SetPasswordProfile(passwordProfile)
 
 	u, err := graphClient.Users().Post(context.Background(), requestBody, nil)
 
 	if err != nil {
-		c.Header("Content-Type", "application/json")
-		c.IndentedJSON(http.StatusInternalServerError, err)
+		c.AbortWithStatusJSON(http.StatusInternalServerError, err)
+		return
 	}
 
 	user := user{
@@ -165,17 +187,17 @@ func deleteUser(c *gin.Context) {
 	client, exists := c.Get("graphClient")
 
 	if !exists {
-		c.Header("Content-Type", "application/json")
-		c.IndentedJSON(http.StatusInternalServerError, "Graph client not found")
+		c.AbortWithStatusJSON(http.StatusInternalServerError, "Graph client not found")
+		return
 	}
 
 	graphClient := client.(*msgraphsdk.GraphServiceClient)
 
-	error := graphClient.Users().ByUserId(id).Delete(context.Background(), nil)
+	err := graphClient.Users().ByUserId(id).Delete(context.Background(), nil)
 
-	if error != nil {
-		c.Header("Content-Type", "application/json")
-		c.IndentedJSON(http.StatusInternalServerError, error)
+	if err != nil {
+		c.AbortWithStatusJSON(http.StatusInternalServerError, err)
+		return
 	}
 
 	c.IndentedJSON(http.StatusNoContent, nil)
@@ -316,7 +338,6 @@ func validateAccessToken(accessToken string) (bool, error) {
 		jwt.WithIssuedAt())
 
 	if err != nil {
-		fmt.Println(err)
 		return false, err
 	}
 
@@ -325,7 +346,6 @@ func validateAccessToken(accessToken string) (bool, error) {
 			return false, nil
 		}
 	} else {
-		fmt.Println(err)
 		return false, err
 	}
 
@@ -337,8 +357,8 @@ func authMiddleware() gin.HandlerFunc {
 		authHeader := c.Request.Header.Get("Authorization")
 
 		if authHeader == "" {
-			c.Header("Content-Type", "application/json")
-			c.IndentedJSON(http.StatusUnauthorized, "Authorization header not found")
+			c.AbortWithStatusJSON(http.StatusUnauthorized, "Missing authorization header")
+			return
 		}
 
 		accessToken := strings.Split(authHeader, " ")[1]
@@ -346,13 +366,13 @@ func authMiddleware() gin.HandlerFunc {
 		isValid, err := validateAccessToken(accessToken)
 
 		if err != nil {
-			c.Header("Content-Type", "application/json")
-			c.IndentedJSON(http.StatusInternalServerError, err)
+			c.AbortWithStatusJSON(http.StatusInternalServerError, err)
+			return
 		}
 
 		if !isValid {
-			c.Header("Content-Type", "application/json")
-			c.IndentedJSON(http.StatusUnauthorized, "Invalid access token")
+			c.AbortWithStatusJSON(http.StatusUnauthorized, "Invalid access token")
+			return
 		}
 
 		c.Next()
@@ -364,7 +384,9 @@ func main() {
 	tenantId, clientId, clientSecret := getConfig()
 
 	router := gin.Default()
+
 	router.Use(corsMiddleware())
+
 	router.Use(authMiddleware())
 
 	router.Use(GraphClientMiddleware(tenantId, clientId, clientSecret))
