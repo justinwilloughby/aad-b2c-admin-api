@@ -36,7 +36,7 @@ on:
 
 env:
   AZURE_CONTAINER_REGISTRY: "justinwilloughby.azurecr.io"
-  CONTAINER_NAME: "justinwilloughby/aad-b2c-admin-api:latest"
+  CONTAINER_NAME: "aad-b2c-admin-api:latest"
   RESOURCE_GROUP: "rg-kubernetes"
   CLUSTER_NAME: "aks-cluster"
   DEPLOYMENT_MANIFEST_PATH: "./deploy"
